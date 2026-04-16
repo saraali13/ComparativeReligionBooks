@@ -1,0 +1,65 @@
+name: PR Acceptability Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check-pr:
+    name: Check PR library requirement
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Count books in library
+        id: count
+        run: |
+          set -e
+          echo "Detecting books in repository..."
+          count=0
+
+          # Prefer library/books.json or top-level books.json if present.
+          if [ -f library/books.json ]; then
+            count=$(jq 'if type=="array" then length elif .books and (.books|type=="array") then .books|length else 0 end' library/books.json 2>/dev/null || echo 0)
+          elif [ -f books.json ]; then
+            count=$(jq 'if type=="array" then length elif .books and (.books|type=="array") then .books|length else 0 end' books.json 2>/dev/null || echo 0)
+          else
+            # Fallback: count files under library/ with common extensions
+            if [ -d library ]; then
+              count=$(find library -type f -not -path '*/.*' \( -iname '*.md' -o -iname '*.json' -o -iname '*.txt' \) | wc -l | tr -d ' ')
+            else
+              count=0
+            fi
+          fi
+
+          echo "Found book count: $count"
+          echo "count=$count" >> $GITHUB_OUTPUT
+
+      - name: Comment on PR and mark check result
+        uses: actions/github-script@v6
+        env:
+          BOOK_COUNT: ${{ steps.count.outputs.count }}
+        with:
+          script: |
+            const count = parseInt(process.env.BOOK_COUNT || '0', 10)
+            const prNumber = context.payload.pull_request.number
+            const owner = context.repo.owner
+            const repo = context.repo.repo
+
+            if (count >= 5) {
+              const body = `✅ PR accepted: library contains ${count} book(s). Thank you for the contribution.`
+              await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body })
+              core.info(body)
+            } else {
+              const body = `❌ PR rejected: library must contain at least 5 books. Currently detected: ${count}. Please add more entries (either add files under library/ or add a books.json with an array of books).`
+              await github.rest.issues.createComment({ owner, repo, issue_number: prNumber, body })
+              core.setFailed(body)
+            }
